@@ -14,26 +14,6 @@ import glob
 from PIL import Image
 import numpy as np
 FLAGS = tf.app.flags.FLAGS
-
-# Basic model parameters.
-tf.app.flags.DEFINE_integer('batch_size', 32,
-                            """Number of images to process in a batch.""")
-tf.app.flags.DEFINE_string('data_dir', '/local/miniplaces/images',
-                           """Path to the miniplaces data directory.""")
-tf.app.flags.DEFINE_string('label_dir', '/local/miniplaces/development_kit/data',
-                           """Path to the miniplaces label directory.""")
-# Process images of this size. Note that this differs from the original CIFAR
-# image size of 32 x 32. If one alters this number, then the entire model
-# architecture will change and any model would need to be retrained.
-IMAGE_SIZE = 24
-
-# Global constants describing the CIFAR-10 data set.
-NUM_CLASSES = 10
-#NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN = 50000
-#NUM_EXAMPLES_PER_EPOCH_FOR_EVAL = 10000
-NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN = 64
-NUM_EXAMPLES_PER_EPOCH_FOR_EVAL = 128
-
 #FROM CIFAR
 def _generate_image_and_label_batch(image, label, min_queue_examples):
   """Construct a queued batch of images and labels.
@@ -68,10 +48,10 @@ def get_filenames(eval_data):
 
   if not eval_data:
     filenames = glob.glob(os.path.join(FLAGS.data_dir, 'train', '*/*/*.jpg'))
-    num_examples_per_epoch = NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN
+    num_examples_per_epoch = FLAGS.num_examples_per_epoch_for_train
   else:
     filenames = glob.glob(os.path.join(FLAGS.data_dir, 'val', '*.jpg'))
-    num_examples_per_epoch = NUM_EXAMPLES_PER_EPOCH_FOR_EVAL
+    num_examples_per_epoch = FLAGS.num_examples_per_epoch_for_eval
   return filenames, num_examples_per_epoch
 
 
@@ -123,8 +103,8 @@ def get_image_batch(file_fifo, label_fifo, num_examples_per_epoch):
 
     reshaped_image = tf.cast(read_input.uint8image, tf.float32)
 
-    height = IMAGE_SIZE
-    width = IMAGE_SIZE
+    height = FLAGS.image_size
+    width = FLAGS.image_size
 
     # Image processing for evaluation.
     # Crop the central [height, width] of the image.
@@ -142,6 +122,12 @@ def get_image_batch(file_fifo, label_fifo, num_examples_per_epoch):
     return _generate_image_and_label_batch(float_image, read_input.label,
                                              min_queue_examples)
 
+def inputs(eval_data):
+    filenames, num_examples_per_epoch = get_filenames(eval_data)
+    label_dict = load_labels(eval_data)
+    file_fifo, label_enqueue, label_fifo = queue_files(filenames, label_dict, num_examples_per_epoch)
+    input_image,label = get_image_batch(file_fifo, label_fifo, num_examples_per_epoch)
+    return label_enqueue, input_image, label, num_examples_per_epoch
 def main():
   with tf.Graph().as_default():
     eval_data = False
