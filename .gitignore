@@ -1,0 +1,6 @@
+*.jpg
+*.pyc
+*.out
+images
+objects
+tensorflow_source
