@@ -1,28 +1,21 @@
-import gzip
 import os
 import re
 import sys
-import tarfile
-import urllib
 import time
 
 import tensorflow.python.platform
 import tensorflow as tf
 
 from tensorflow.python.platform import gfile
-import glob
-from PIL import Image
 import numpy as np
 FLAGS = tf.app.flags.FLAGS
 #FROM CIFAR
-def _generate_image_and_label_batch(image, label, min_queue_examples):
+def _generate_image_and_label_batch(image, label):
   """Construct a queued batch of images and labels.
 
   Args:
     image: 3-D Tensor of [IMAGE_SIZE, IMAGE_SIZE, 3] of type.float32.
     label: 1-D Tensor of type.int32
-    min_queue_examples: int32, minimum number of samples to retain
-      in the queue that provides of batches of examples.
 
   Returns:
     images: Images. 4D tensor of [batch_size, IMAGE_SIZE, IMAGE_SIZE, 3] size.
@@ -30,29 +23,38 @@ def _generate_image_and_label_batch(image, label, min_queue_examples):
   """
   # Create a queue that shuffles the examples, and then
   # read 'FLAGS.batch_size' images + labels from the example queue.
-  num_preprocess_threads = 16
+  num_preprocess_threads = 12
   images, label_batch = tf.train.shuffle_batch(
       [image, label],
       batch_size=FLAGS.batch_size,
       num_threads=num_preprocess_threads,
-      capacity=min_queue_examples + 3 * FLAGS.batch_size,
-      min_after_dequeue=min_queue_examples)
+      capacity=FLAGS.min_queue_size + 3 * FLAGS.batch_size,
+      min_after_dequeue=FLAGS.min_queue_size)
 
   # Display the training images in the visualizer.
   tf.image_summary('images', images)
   return images, tf.reshape(label_batch, [FLAGS.batch_size])
 
 def get_filenames(eval_data):
-  if not FLAGS.data_dir:
-    raise ValueError('Please supply a data_dir')
+    if not FLAGS.data_dir:
+        raise ValueError('Please supply a data_dir')
 
-  if not eval_data:
-    filenames = glob.glob(os.path.join(FLAGS.data_dir, 'train', '*/*/*.jpg'))
-    num_examples_per_epoch = FLAGS.num_examples_per_epoch_for_train
-  else:
-    filenames = glob.glob(os.path.join(FLAGS.data_dir, 'val', '*.jpg'))
-    num_examples_per_epoch = FLAGS.num_examples_per_epoch_for_eval
-  return filenames, num_examples_per_epoch
+    if not eval_data:
+        first_part_dir = 'train'
+    else:
+        first_part_dir = 'val'
+    data_dir = os.path.join(FLAGS.data_dir, first_part_dir)
+
+    home_dir = os.getcwd()
+    filenames = []
+    for dirName, subdirlist, filelist in os.walk(data_dir):
+        for fname in filelist:
+            if not os.path.isdir(fname):
+                data_file_path = os.path.join(dirName, fname)
+                #data_file_path = first_part_dir + os.path.join(dirName.split(data_dir)[-1], fname)
+                filenames.append(data_file_path)
+    os.chdir(home_dir)
+    return filenames
 
 
 def load_labels(eval_data):
@@ -64,11 +66,11 @@ def load_labels(eval_data):
     with gfile.GFile(filename, 'r') as f:
         for line in f:
             image_file,label = line.split()
-            image_file = os.path.join(FLAGS.data_dir,image_file)
+            image_file = os.path.join(FLAGS.data_dir, image_file)
             labels[image_file] = int(label)
     return labels
 
-def queue_files(filenames, label_dict, num_examples_per_epoch):
+def queue_files(filenames, label_dict):
     np.random.shuffle(filenames)
     label_list = [label_dict[f] for f in filenames]
     lv = tf.constant(label_list)
@@ -78,7 +80,7 @@ def queue_files(filenames, label_dict, num_examples_per_epoch):
     label_enqueue = label_fifo.enqueue_many([lv])
     return file_fifo, label_enqueue, label_fifo
 
-def read_image(file_fifo, label_fifo, min_queue_examples):
+def read_image(file_fifo, label_fifo):
     class MiniplacesRecord(object):
         pass
     result = MiniplacesRecord()
@@ -92,81 +94,70 @@ def read_image(file_fifo, label_fifo, min_queue_examples):
     result.uint8image = image
     result.label = label_fifo.dequeue()
     return result
-
-def get_image_batch(file_fifo, label_fifo, num_examples_per_epoch):
-
-    min_fraction_of_examples_in_queue = 0.4
-    min_queue_examples = int(num_examples_per_epoch *
-                             min_fraction_of_examples_in_queue)
-
-    read_input = read_image(file_fifo, label_fifo, min_queue_examples)
-
-    reshaped_image = tf.cast(read_input.uint8image, tf.float32)
+def crop_and_distort_image(image):
 
     height = FLAGS.image_size
     width = FLAGS.image_size
+    # Image processing for training the network. Note the many random
+    # distortions applied to the image.
 
+    # Randomly crop a [height, width] section of the image.
+    distorted_image = tf.image.random_crop(image, [height, width])
+
+    # Randomly flip the image horizontally.
+    distorted_image = tf.image.random_flip_left_right(distorted_image)
+
+    order = np.random.randint(2)
+    # Because these operations are not commutative, consider randomizing
+    # randomize the order their operation
+    if order == 0:
+        distorted_image = tf.image.random_brightness(distorted_image,
+                                                 max_delta=63)
+        distorted_image = tf.image.random_contrast(distorted_image,
+                                               lower=0.2, upper=1.8)
+    else:
+        distorted_image = tf.image.random_contrast(distorted_image,
+                                               lower=0.2, upper=1.8)
+        distorted_image = tf.image.random_brightness(distorted_image,
+                                                 max_delta=63)
+    # Subtract off the mean and divide by the variance of the pixels.
+    float_image = tf.image.per_image_whitening(distorted_image)
+    return float_image
+def crop_image(image):
+
+    height = FLAGS.image_size
+    width = FLAGS.image_size
     # Image processing for evaluation.
     # Crop the central [height, width] of the image.
-    resized_image = tf.image.resize_image_with_crop_or_pad(reshaped_image,
-                                                           width, height)
+    resized_image = tf.image.resize_image_with_crop_or_pad(image,
+                                                         width, height)
 
     # Subtract off the mean and divide by the variance of the pixels.
     float_image = tf.image.per_image_whitening(resized_image)
+    return float_image
+def get_image_batch(file_fifo, label_fifo, distorted):
+
+    min_fraction_of_examples_in_queue = 0.4
+
+    read_input = read_image(file_fifo, label_fifo)
+
+    reshaped_image = tf.cast(read_input.uint8image, tf.float32)
+
+
+    if distorted:
+        float_image = crop_and_distort_image(reshaped_image)
+    else:
+        float_image = crop_image(reshaped_image)
 
     # Ensure that the random shuffling has good mixing properties.
-    min_fraction_of_examples_in_queue = 0.4
-    min_queue_examples = int(num_examples_per_epoch *
-                             min_fraction_of_examples_in_queue)
     # Generate a batch of images and labels by building up a queue of examples.
-    return _generate_image_and_label_batch(float_image, read_input.label,
-                                             min_queue_examples)
+    return _generate_image_and_label_batch(float_image, read_input.label)
 
-def inputs(eval_data):
-    filenames, num_examples_per_epoch = get_filenames(eval_data)
+def inputs(eval_data, distorted=False):
+    if eval_data and distorted:
+        raise RuntimeError('Dont distort inputs for evaluation!')
+    filenames = get_filenames(eval_data)
     label_dict = load_labels(eval_data)
-    file_fifo, label_enqueue, label_fifo = queue_files(filenames, label_dict, num_examples_per_epoch)
-    input_image,label = get_image_batch(file_fifo, label_fifo, num_examples_per_epoch)
-    return label_enqueue, input_image, label, num_examples_per_epoch
-def main():
-  with tf.Graph().as_default():
-    eval_data = False
-    filenames, num_examples_per_epoch = get_filenames(eval_data)
-    #TODO: filenames too large for this method
-    filenames = filenames
-    label_dict = load_labels(eval_data)
-    file_fifo, label_enqueue, label_fifo = queue_files(filenames, label_dict, num_examples_per_epoch)
-
-    input_image,label = get_image_batch(file_fifo, label_fifo, num_examples_per_epoch)
-    print input_image.get_shape()
-
-    #image_batches holds np arrays of np arrays of whitened, cropped images
-    image_batches = []
-    label_batches = []
-    init_op = tf.initialize_all_variables()
-    with tf.Session() as sess:
-      sess.run(init_op)
-
-      coord = tf.train.Coordinator()
-      threads = tf.train.start_queue_runners(coord=coord,sess=sess)
-      #threads = tf.train.start_queue_runners(sess=sess)
-
-      #basically training steps, each iteration loads an image
-        #TODO: how to properly do enqueing and dequeing
-      sess.run([label_enqueue])
-      for i in xrange(100):
-        image_batch, label_batch= sess.run([input_image, label])
-        image_batches.append(image_batch)
-        label_batches.append(label_batch)
-        #print one_f.get_shape()
-        #im = Image.fromarray(one_f)
-        #im.show()
-
-      coord.request_stop()
-      coord.join(threads)
-    print len(image_batches)
-    print image_batches[0].shape
-    print len(label_batches)
-    print label_batches[0].shape
-if __name__ == '__main__':
-    main()
+    file_fifo, label_enqueue, label_fifo = queue_files(filenames, label_dict)
+    input_image,label = get_image_batch(file_fifo, label_fifo, distorted)
+    return label_enqueue, input_image, label
