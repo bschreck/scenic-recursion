@@ -9,7 +9,6 @@ import time
 import tensorflow.python.platform
 import tensorflow as tf
 
-import miniplaces_input
 from tensorflow.python.platform import gfile
 import glob
 from PIL import Image
@@ -68,7 +67,6 @@ def get_filenames(eval_data):
     raise ValueError('Please supply a data_dir')
 
   if not eval_data:
-    #filenames = tf.train.match_filenames_once(os.path.join(FLAGS.data_dir, 'train','*.jpg'))
     filenames = glob.glob(os.path.join(FLAGS.data_dir, 'train', '*/*/*.jpg'))
     num_examples_per_epoch = NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN
   else:
@@ -91,21 +89,16 @@ def load_labels(eval_data):
     return labels
 
 def queue_files(filenames, label_dict, num_examples_per_epoch):
+    np.random.shuffle(filenames)
     label_list = [label_dict[f] for f in filenames]
-    fv = tf.constant(filenames)
     lv = tf.constant(label_list)
 
-    # Ensure that the random shuffling has good mixing properties.
-    min_fraction_of_examples_in_queue = 0.4
-    min_queue_examples = int(num_examples_per_epoch *
-                           min_fraction_of_examples_in_queue)
-    capacity = min_queue_examples + 3 * FLAGS.batch_size
-    #rsq = tf.RandomShuffleQueue(capacity,min_queue_examples,[tf.string,tf.int32], shapes=[[],[]])
-    rsq = tf.RandomShuffleQueue(10,0,[tf.string,tf.int32], shapes=[[],[]])
-    do_enqueues = rsq.enqueue_many([fv,lv])
-    return rsq, do_enqueues
+    label_fifo = tf.FIFOQueue(len(filenames),tf.int32,shapes=[[]])
+    file_fifo = tf.train.string_input_producer(filenames, shuffle=False, capacity=len(filenames))
+    label_enqueue = label_fifo.enqueue_many([lv])
+    return file_fifo, label_enqueue, label_fifo
 
-def read_image(filename, label):
+def read_image(file_fifo, label_fifo, min_queue_examples):
     class MiniplacesRecord(object):
         pass
     result = MiniplacesRecord()
@@ -113,26 +106,21 @@ def read_image(filename, label):
     result.width = 128
     result.depth = 3
     reader = tf.WholeFileReader()
-    #TODO: how do we give reader a filename to read?
-    #This seems stupid (enqueing and dequeing each time),
-    #and i dont think it works
-    file_fifo = tf.FIFOQueue(1,tf.string,shapes=[])
-    file_fifo.enqueue([filename])
     result.key, value = reader.read(file_fifo)
     image = tf.image.decode_jpeg(value, channels=3)
     image.set_shape([128,128,3])
     result.uint8image = image
-    result.label = label
+    result.label = label_fifo.dequeue()
     return result
 
-def get_image_batch(rsq, num_examples_per_epoch):
-    gotf,gotl = rsq.dequeue()
+def get_image_batch(file_fifo, label_fifo, num_examples_per_epoch):
 
+    min_fraction_of_examples_in_queue = 0.4
+    min_queue_examples = int(num_examples_per_epoch *
+                             min_fraction_of_examples_in_queue)
 
-    return gotf, gotl
-    read_input = read_image(gotf,gotl)
+    read_input = read_image(file_fifo, label_fifo, min_queue_examples)
 
-    return read_input.uint8image, read_input.label
     reshaped_image = tf.cast(read_input.uint8image, tf.float32)
 
     height = IMAGE_SIZE
@@ -159,31 +147,40 @@ def main():
     eval_data = False
     filenames, num_examples_per_epoch = get_filenames(eval_data)
     #TODO: filenames too large for this method
-    filenames = filenames[:10]
+    filenames = filenames
     label_dict = load_labels(eval_data)
-    rsq,do_enqueues = queue_files(filenames, label_dict, num_examples_per_epoch)
+    file_fifo, label_enqueue, label_fifo = queue_files(filenames, label_dict, num_examples_per_epoch)
 
-    input_image, input_label = get_image_batch(rsq, num_examples_per_epoch)
+    input_image,label = get_image_batch(file_fifo, label_fifo, num_examples_per_epoch)
+    print input_image.get_shape()
 
     #image_batches holds np arrays of np arrays of whitened, cropped images
     image_batches = []
+    label_batches = []
     init_op = tf.initialize_all_variables()
     with tf.Session() as sess:
       sess.run(init_op)
 
       coord = tf.train.Coordinator()
-      #threads = tf.train.start_queue_runners(coord=coord,sess=sess)
-      threads = tf.train.start_queue_runners(sess=sess)
+      threads = tf.train.start_queue_runners(coord=coord,sess=sess)
+      #threads = tf.train.start_queue_runners(sess=sess)
 
       #basically training steps, each iteration loads an image
         #TODO: how to properly do enqueing and dequeing
-      for j in xrange(2):
-        sess.run(do_enqueues)
-        for i in xrange(10):
-          one_f,one_l = sess.run([input_image,input_label])
-          print "F: ", one_f, "L: ", one_l
+      sess.run([label_enqueue])
+      for i in xrange(100):
+        image_batch, label_batch= sess.run([input_image, label])
+        image_batches.append(image_batch)
+        label_batches.append(label_batch)
+        #print one_f.get_shape()
+        #im = Image.fromarray(one_f)
+        #im.show()
 
-      #coord.request_stop()
-      #coord.join(threads)
+      coord.request_stop()
+      coord.join(threads)
+    print len(image_batches)
+    print image_batches[0].shape
+    print len(label_batches)
+    print label_batches[0].shape
 if __name__ == '__main__':
     main()
