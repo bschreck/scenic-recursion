@@ -60,6 +60,8 @@ def eval_once(saver, summary_writer, top_k_op, summary_op, label_enqueue):
   """
   with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
     ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
+    print ckpt
+    print ckpt.model_checkpoint_path
     if ckpt and ckpt.model_checkpoint_path:
       # Restores from checkpoint
       saver.restore(sess, ckpt.model_checkpoint_path)
@@ -87,9 +89,27 @@ def eval_once(saver, summary_writer, top_k_op, summary_op, label_enqueue):
       step = 0
       while step < num_iter and not coord.should_stop():
           #TODO:try rerunning lablel enqueue
-        # if step == 309:
-            # sess.run(label_enqueue)
-        # print "STEP:",step
+        end_epoch = False
+        if step > 0:
+            for qr in tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS):
+                # print "queue:", qr._queue
+                # print "size:",qr._queue.size().eval()
+                size = qr._queue.size().eval()
+                if size - FLAGS.batch_size < FLAGS.min_queue_size:
+                    end_epoch = True
+        if end_epoch:
+            sess.run(label_enqueue)
+            # coord.join(threads, stop_grace_period_secs=10)
+            # print 'closed'
+            # for qr in tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS):
+                # #print "size:",qr._queue.size().eval()
+                # qr._queue.close(cancel_pending_enqueues=True)
+                # # print "size:",qr._queue.size().eval()
+                # # output = qr._queue.dequeue_many(112)
+                # # print "len output:", output.eval().shape
+                # # print "size:",qr._queue.size().eval()
+            # # sess.run(label_enqueue)
+        print "STEP:",step
         predictions = sess.run([top_k_op])
         true_count += np.sum(predictions)
         step += 1
@@ -111,7 +131,7 @@ def eval_once(saver, summary_writer, top_k_op, summary_op, label_enqueue):
 
 def evaluate():
   """Eval CIFAR-10 for a number of steps."""
-  with tf.Graph().as_default(), tf.device('/gpu:0'):
+  with tf.Graph().as_default(), tf.device('/cpu:0'):
     # Get images and labels for CIFAR-10.
     eval_data = True
     label_enqueue, images, labels = load_input.inputs(eval_data,distorted=False)

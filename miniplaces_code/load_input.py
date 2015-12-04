@@ -70,12 +70,16 @@ def load_labels(eval_data):
             labels[image_file] = int(label)
     return labels
 
-def queue_files(filenames, label_dict):
+def queue_files(filenames, label_dict, eval_data):
     np.random.shuffle(filenames)
     label_list = [label_dict[f] for f in filenames]
     lv = tf.constant(label_list)
 
     label_fifo = tf.FIFOQueue(len(filenames),tf.int32,shapes=[[]])
+    # if eval_data:
+        # num_epochs = 1
+    # else:
+        # num_epochs = None
     file_fifo = tf.train.string_input_producer(filenames, shuffle=False, capacity=len(filenames))
     label_enqueue = label_fifo.enqueue_many([lv])
     return file_fifo, label_enqueue, label_fifo
@@ -158,6 +162,6 @@ def inputs(eval_data, distorted=False):
         raise RuntimeError('Dont distort inputs for evaluation!')
     filenames = get_filenames(eval_data)
     label_dict = load_labels(eval_data)
-    file_fifo, label_enqueue, label_fifo = queue_files(filenames, label_dict)
+    file_fifo, label_enqueue, label_fifo = queue_files(filenames, label_dict, eval_data)
     input_image,label = get_image_batch(file_fifo, label_fifo, distorted)
     return label_enqueue, input_image, label
