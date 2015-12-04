@@ -26,9 +26,10 @@ tf.app.flags.DEFINE_integer('num_examples_per_epoch_for_eval', 10000,"""Number o
 tf.app.flags.DEFINE_integer('min_queue_size', 100,"""Number of examples per epoch for eval""")
 tf.app.flags.DEFINE_integer('max_steps', 1000000,
                             """Number of batches to run.""")
-tf.app.flags.DEFINE_boolean('log_device_placement', False,
+tf.app.flags.DEFINE_boolean('log_device_placement', True,
                             """Whether to log device placement.""")
 tf.app.flags.DEFINE_string('tower_name', 'tower', """tower name for multi-gpu version""")
+tf.app.flags.DEFINE_string('device', '/gpu:0', """device to use for variables""")
 
 tf.app.flags.DEFINE_float('moving_average_decay', 0.9999,"""The decay to use for the moving average""")
 tf.app.flags.DEFINE_float('num_epochs_per_decay', 350.0,"""Epochs after which learning rate decays.""")
@@ -36,8 +37,11 @@ tf.app.flags.DEFINE_float('learning_rate_decay_factor', 0.1,"""Learning rate dec
 tf.app.flags.DEFINE_float('initial_learning_rate', 0.1,"""Initial learning rate.""")
 
 def train():
-    with tf.Graph().as_default():
-        global_step = tf.Variable(0, trainable=False)
+
+    with tf.Graph().as_default(), tf.device('/gpu:1'):
+        global_step = tf.get_variable(
+            'global_step',[],
+            initializer=tf.constant_initializer(0), trainable=False)
 
         eval_data = False
         label_enqueue, images, labels = load_input.inputs(eval_data, distorted=True)
@@ -62,9 +66,10 @@ def train():
         # # Build an initialization operation to run below.
         init = tf.initialize_all_variables()
 
-        # Start running operations on the Graph.
+            # Start running operations on the Graph.
         sess = tf.Session(config=tf.ConfigProto(
-                log_device_placement=FLAGS.log_device_placement))
+                    allow_soft_placement=True,
+                    log_device_placement=FLAGS.log_device_placement))
         sess.run(init)
 
         coord = tf.train.Coordinator()
@@ -72,7 +77,7 @@ def train():
         sess.run(label_enqueue)
 
         summary_writer = tf.train.SummaryWriter(FLAGS.train_dir,
-                                            graph_def=sess.graph_def)
+                                                graph_def=sess.graph_def)
 
 
 
@@ -108,18 +113,6 @@ def train():
         coord.request_stop()
         coord.join(threads)
 
-        # with tf.Session() as sess:
-            # sess.run(init)
-
-            # coord = tf.train.Coordinator()
-            # threads = tf.train.start_queue_runners(coord=coord,sess=sess)
-            # sess.run([label_enqueue])
-            # for i in xrange(FLAGS.num_epochs):
-                # for j in xrange(num_batches):
-                    # image_batch, label_batch= sess.run([input_image, label])
-                    # print image_batch.shape
-            # coord.request_stop()
-            # coord.join(threads)
 def main(argv=None):
     train()
 

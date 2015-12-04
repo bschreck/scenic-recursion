@@ -4,3 +4,4 @@
 images
 objects
 tensorflow_source
+train_output/*

@@ -50,8 +50,8 @@ def _variable_with_weight_decay(name, shape, stddev, wd):
   Returns:
     Variable Tensor
   """
-  var = _variable_on_cpu(name, shape,
-                         tf.truncated_normal_initializer(stddev=stddev))
+  var = tf.get_variable(name, shape,
+                         initializer=tf.truncated_normal_initializer(stddev=stddev))
   if wd:
     weight_decay = tf.mul(tf.nn.l2_loss(var), wd, name='weight_loss')
     tf.add_to_collection('losses', weight_decay)
@@ -76,7 +76,7 @@ def inference(images):
     kernel = _variable_with_weight_decay('weights', shape=[5, 5, 3, 64],
                                          stddev=1e-4, wd=0.0)
     conv = tf.nn.conv2d(images, kernel, [1, 1, 1, 1], padding='SAME')
-    biases = _variable_on_cpu('biases', [64], tf.constant_initializer(0.0))
+    biases = tf.get_variable('biases', [64], initializer=tf.constant_initializer(0.0))
     bias = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape().as_list())
     conv1 = tf.nn.relu(bias, name=scope.name)
     _activation_summary(conv1)
@@ -93,7 +93,7 @@ def inference(images):
     kernel = _variable_with_weight_decay('weights', shape=[5, 5, 64, 64],
                                          stddev=1e-4, wd=0.0)
     conv = tf.nn.conv2d(norm1, kernel, [1, 1, 1, 1], padding='SAME')
-    biases = _variable_on_cpu('biases', [64], tf.constant_initializer(0.1))
+    biases = tf.get_variable('biases', [64], initializer=tf.constant_initializer(0.1))
     bias = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape().as_list())
     conv2 = tf.nn.relu(bias, name=scope.name)
     _activation_summary(conv2)
@@ -115,7 +115,7 @@ def inference(images):
 
     weights = _variable_with_weight_decay('weights', shape=[dim, 384],
                                           stddev=0.04, wd=0.004)
-    biases = _variable_on_cpu('biases', [384], tf.constant_initializer(0.1))
+    biases = tf.get_variable('biases', [384], initializer=tf.constant_initializer(0.1))
     local3 = tf.nn.relu_layer(reshape, weights, biases, name=scope.name)
     _activation_summary(local3)
 
@@ -123,7 +123,7 @@ def inference(images):
   with tf.variable_scope('local4') as scope:
     weights = _variable_with_weight_decay('weights', shape=[384, 192],
                                           stddev=0.04, wd=0.004)
-    biases = _variable_on_cpu('biases', [192], tf.constant_initializer(0.1))
+    biases = tf.get_variable('biases', [192], initializer=tf.constant_initializer(0.1))
     local4 = tf.nn.relu_layer(local3, weights, biases, name=scope.name)
     _activation_summary(local4)
 
@@ -131,8 +131,8 @@ def inference(images):
   with tf.variable_scope('softmax_linear') as scope:
     weights = _variable_with_weight_decay('weights', [192, FLAGS.num_classes],
                                           stddev=1/192.0, wd=0.0)
-    biases = _variable_on_cpu('biases', [FLAGS.num_classes],
-                              tf.constant_initializer(0.0))
+    biases = tf.get_variable('biases', [FLAGS.num_classes],
+                              initializer=tf.constant_initializer(0.0))
     softmax_linear = tf.nn.xw_plus_b(local4, weights, biases, name=scope.name)
     _activation_summary(softmax_linear)
 

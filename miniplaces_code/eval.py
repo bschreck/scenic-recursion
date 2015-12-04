@@ -1,38 +1,46 @@
-"""Evaluation for CIFAR-10.
-
-Accuracy:
-cifar10_train.py achieves 83.0% accuracy after 100K steps (256 epochs
-of data) as judged by cifar10_eval.py.
-
-Speed:
-On a single Tesla K40, cifar10_train.py processes a single batch of 128 images
-in 0.25-0.35 sec (i.e. 350 - 600 images /sec). The model reaches ~86%
-accuracy after 100K steps in 8 hours of training time.
-
-Usage:
-Please see the tutorial and website for how to download the CIFAR-10
-data set, compile the program and train the model.
-
-http://tensorflow.org/tutorials/deep_cnn/
-"""
+from __future__ import division
 from datetime import datetime
 import math
 import time
-
-import tensorflow.python.platform
-from tensorflow.python.platform import gfile
 import numpy as np
 import tensorflow as tf
-
-import cifar10
-
+import load_input
+import model
+import os
 FLAGS = tf.app.flags.FLAGS
 
-tf.app.flags.DEFINE_string('eval_dir', '/tmp/cifar10_eval',
+# Basic model parameters.
+tf.app.flags.DEFINE_integer('batch_size', 32,
+                            """Number of images to process in a batch.""")
+tf.app.flags.DEFINE_string('data_dir', '/local/miniplaces/images',
+                           """Path to the miniplaces data directory.""")
+tf.app.flags.DEFINE_string('label_dir', '/local/miniplaces/development_kit/data',
+                           """Path to the miniplaces label directory.""")
+tf.app.flags.DEFINE_string('train_dir', '/local/miniplaces/train_output',
+                           """Path to the miniplaces data directory.""")
+tf.app.flags.DEFINE_integer('image_size', 100,"""width of image to crop to for training""")
+
+tf.app.flags.DEFINE_integer('num_classes', 100,"""Number of classes""")
+#tf.app.flags.DEFINE_integer('num_epochs', 20,"""Number of time to run through data""")
+tf.app.flags.DEFINE_integer('num_examples_per_epoch_for_train', 100000,"""Number of examples per epoch for train""")
+tf.app.flags.DEFINE_integer('num_examples_per_epoch_for_eval', 10000,"""Number of examples per epoch for eval""")
+tf.app.flags.DEFINE_integer('min_queue_size', 100,"""Number of examples per epoch for eval""")
+tf.app.flags.DEFINE_integer('max_steps', 1000000,
+                            """Number of batches to run.""")
+tf.app.flags.DEFINE_boolean('log_device_placement', False,
+                            """Whether to log device placement.""")
+tf.app.flags.DEFINE_string('tower_name', 'tower', """tower name for multi-gpu version""")
+
+tf.app.flags.DEFINE_float('moving_average_decay', 0.9999,"""The decay to use for the moving average""")
+tf.app.flags.DEFINE_float('num_epochs_per_decay', 350.0,"""Epochs after which learning rate decays.""")
+tf.app.flags.DEFINE_float('learning_rate_decay_factor', 0.1,"""Learning rate decay factor.""")
+tf.app.flags.DEFINE_float('initial_learning_rate', 0.1,"""Initial learning rate.""")
+
+tf.app.flags.DEFINE_string('eval_dir', '/local/miniplaces/train_output',
                            """Directory where to write event logs.""")
 tf.app.flags.DEFINE_string('eval_data', 'test',
                            """Either 'test' or 'train_eval'.""")
-tf.app.flags.DEFINE_string('checkpoint_dir', '/tmp/cifar10_train',
+tf.app.flags.DEFINE_string('checkpoint_dir', '/local/miniplaces/train_output',
                            """Directory where to read model checkpoints.""")
 tf.app.flags.DEFINE_integer('eval_interval_secs', 60 * 5,
                             """How often to run the eval.""")
@@ -41,8 +49,7 @@ tf.app.flags.DEFINE_integer('num_examples', 10000,
 tf.app.flags.DEFINE_boolean('run_once', False,
                          """Whether to run eval only once.""")
 
-
-def eval_once(saver, summary_writer, top_k_op, summary_op):
+def eval_once(saver, summary_writer, top_k_op, summary_op, label_enqueue):
   """Run Eval once.
 
   Args:
@@ -51,7 +58,7 @@ def eval_once(saver, summary_writer, top_k_op, summary_op):
     top_k_op: Top K op.
     summary_op: Summary op.
   """
-  with tf.Session() as sess:
+  with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
     ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
     if ckpt and ckpt.model_checkpoint_path:
       # Restores from checkpoint
@@ -75,8 +82,14 @@ def eval_once(saver, summary_writer, top_k_op, summary_op):
       num_iter = int(math.ceil(FLAGS.num_examples / FLAGS.batch_size))
       true_count = 0  # Counts the number of correct predictions.
       total_sample_count = num_iter * FLAGS.batch_size
+
+      sess.run(label_enqueue)
       step = 0
       while step < num_iter and not coord.should_stop():
+          #TODO:try rerunning lablel enqueue
+        # if step == 309:
+            # sess.run(label_enqueue)
+        # print "STEP:",step
         predictions = sess.run([top_k_op])
         true_count += np.sum(predictions)
         step += 1
@@ -98,21 +111,21 @@ def eval_once(saver, summary_writer, top_k_op, summary_op):
 
 def evaluate():
   """Eval CIFAR-10 for a number of steps."""
-  with tf.Graph().as_default():
+  with tf.Graph().as_default(), tf.device('/gpu:0'):
     # Get images and labels for CIFAR-10.
-    eval_data = FLAGS.eval_data == 'test'
-    images, labels = cifar10.inputs(eval_data=eval_data)
+    eval_data = True
+    label_enqueue, images, labels = load_input.inputs(eval_data,distorted=False)
 
     # Build a Graph that computes the logits predictions from the
     # inference model.
-    logits = cifar10.inference(images)
+    logits = model.inference(images)
 
     # Calculate predictions.
     top_k_op = tf.nn.in_top_k(logits, labels, 1)
 
     # Restore the moving average version of the learned variables for eval.
     variable_averages = tf.train.ExponentialMovingAverage(
-        cifar10.MOVING_AVERAGE_DECAY)
+        FLAGS.moving_average_decay)
     variables_to_restore = {}
     for v in tf.all_variables():
       if v in tf.trainable_variables():
@@ -130,17 +143,13 @@ def evaluate():
                                             graph_def=graph_def)
 
     while True:
-      eval_once(saver, summary_writer, top_k_op, summary_op)
+      eval_once(saver, summary_writer, top_k_op, summary_op, label_enqueue)
       if FLAGS.run_once:
         break
       time.sleep(FLAGS.eval_interval_secs)
 
 
 def main(argv=None):  # pylint: disable=unused-argument
-  cifar10.maybe_download_and_extract()
-  if gfile.Exists(FLAGS.eval_dir):
-    gfile.DeleteRecursively(FLAGS.eval_dir)
-  gfile.MakeDirs(FLAGS.eval_dir)
   evaluate()
 
 
