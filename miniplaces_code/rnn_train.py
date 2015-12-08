@@ -14,7 +14,7 @@ tf.app.flags.DEFINE_string('data_dir', '/Users/bschreck/scenic-recursion/images'
                            """Path to the miniplaces data directory.""")
 tf.app.flags.DEFINE_string('label_dir', '/Users/bschreck/scenic-recursion/development_kit/data',
                            """Path to the miniplaces label directory.""")
-tf.app.flags.DEFINE_string('train_dir', '/Users/bschreck/senic-recursion/train_output',
+tf.app.flags.DEFINE_string('train_dir', '/Users/bschreck/scenic-recursion/rnn_train_output',
                            """Path to the miniplaces data directory.""")
 tf.app.flags.DEFINE_integer('image_size', 100,"""width of image to crop to for training""")
 tf.app.flags.DEFINE_integer('glimpse_size', 32,"""width of image to extract glimpse for rnn step""")
@@ -43,7 +43,23 @@ tf.app.flags.DEFINE_float('initial_learning_rate', 0.1,"""Initial learning rate.
 tf.app.flags.DEFINE_float('float_to_pixel', .15, """Ratio of location unit width to number of pixels""")
 tf.app.flags.DEFINE_float('keep_going_threshold', .1, """Ratio of location unit width to number of pixels""")
 
+tf.app.flags.DEFINE_string('eval_dir', '/Users/bschreck/scenic-recursion/rnn_train_output',
+                           """Directory where to write event logs.""")
+tf.app.flags.DEFINE_string('eval_data', 'test',
+                           """Either 'test' or 'train_eval'.""")
+tf.app.flags.DEFINE_string('checkpoint_dir', '/Users/bschreck/scenic-recursion/rnn_train_output',
+                           """Directory where to read model checkpoints.""")
+tf.app.flags.DEFINE_integer('eval_interval_secs', 60 * 5,
+                            """How often to run the eval.""")
+tf.app.flags.DEFINE_integer('num_examples', 10000,
+                            """Number of examples to run.""")
+tf.app.flags.DEFINE_boolean('run_once', False,
+                         """Whether to run eval only once.""")
+tf.app.flags.DEFINE_boolean('evaluate', False,
+                         """Whether to evaluate or train.""")
+
 import recurrent_model as model
+import rnn_eval as eval_func
 
 def train():
     with tf.Graph().as_default(), tf.device('/cpu:0'):
@@ -128,9 +144,11 @@ def train():
         coord.request_stop()
         coord.join(threads)
 
-def main(argv=None):
-    train()
-
+def main(_):
+    if FLAGS.evaluate:
+        eval_func.evaluate()
+    else:
+        train()
 
 if __name__ == '__main__':
     tf.app.run()
