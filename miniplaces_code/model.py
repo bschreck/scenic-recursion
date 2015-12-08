@@ -163,6 +163,7 @@ def loss(logits, labels):
   # Calculate the average cross entropy loss across the batch.
   cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
       logits, dense_labels, name='cross_entropy_per_example')
+
   cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
   tf.add_to_collection('losses', cross_entropy_mean)
 

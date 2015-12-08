@@ -131,7 +131,7 @@ def eval_once(saver, summary_writer, top_k_op, summary_op, label_enqueue):
 
 def evaluate():
   """Eval CIFAR-10 for a number of steps."""
-  with tf.Graph().as_default(), tf.device('/cpu:0'):
+  with tf.Graph().as_default(), tf.device('/gpu:0'):
     # Get images and labels for CIFAR-10.
     eval_data = True
     label_enqueue, images, labels = load_input.inputs(eval_data,distorted=False)
