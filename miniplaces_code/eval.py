@@ -42,7 +42,9 @@ tf.app.flags.DEFINE_string('eval_data', 'test',
                            """Either 'test' or 'train_eval'.""")
 tf.app.flags.DEFINE_string('checkpoint_dir', '/local/miniplaces/train_output',
                            """Directory where to read model checkpoints.""")
-tf.app.flags.DEFINE_integer('eval_interval_secs', 60 * 5,
+#tf.app.flags.DEFINE_integer('eval_interval_secs', 60 * 5,
+#                            """How often to run the eval.""")
+tf.app.flags.DEFINE_integer('eval_interval_secs', 1,
                             """How often to run the eval.""")
 tf.app.flags.DEFINE_integer('num_examples', 10000,
                             """Number of examples to run.""")
@@ -60,8 +62,6 @@ def eval_once(saver, summary_writer, top_k_op, summary_op, label_enqueue):
   """
   with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
     ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
-    print ckpt
-    print ckpt.model_checkpoint_path
     if ckpt and ckpt.model_checkpoint_path:
       # Restores from checkpoint
       saver.restore(sess, ckpt.model_checkpoint_path)
@@ -88,28 +88,14 @@ def eval_once(saver, summary_writer, top_k_op, summary_op, label_enqueue):
       sess.run(label_enqueue)
       step = 0
       while step < num_iter and not coord.should_stop():
-          #TODO:try rerunning lablel enqueue
         end_epoch = False
         if step > 0:
             for qr in tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS):
-                # print "queue:", qr._queue
-                # print "size:",qr._queue.size().eval()
                 size = qr._queue.size().eval()
                 if size - FLAGS.batch_size < FLAGS.min_queue_size:
                     end_epoch = True
         if end_epoch:
             sess.run(label_enqueue)
-            # coord.join(threads, stop_grace_period_secs=10)
-            # print 'closed'
-            # for qr in tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS):
-                # #print "size:",qr._queue.size().eval()
-                # qr._queue.close(cancel_pending_enqueues=True)
-                # # print "size:",qr._queue.size().eval()
-                # # output = qr._queue.dequeue_many(112)
-                # # print "len output:", output.eval().shape
-                # # print "size:",qr._queue.size().eval()
-            # # sess.run(label_enqueue)
-        print "STEP:",step
         predictions = sess.run([top_k_op])
         true_count += np.sum(predictions)
         step += 1

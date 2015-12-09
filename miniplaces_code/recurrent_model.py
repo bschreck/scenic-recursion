@@ -1,8 +1,10 @@
 from __future__ import division
 import tensorflow as tf
+import numpy as np
 
 from tensorflow.models.rnn import rnn_cell
 import util
+import re
 FLAGS = tf.app.flags.FLAGS
 
 #max of either on pixel scale is floor(image_size/2) - floor(glimpse_size/2) - 1
@@ -26,6 +28,20 @@ def _activation_summary(x):
   tensor_name = re.sub('%s_[0-9]*/' % FLAGS.tower_name, '', x.op.name)
   tf.histogram_summary(tensor_name + '/activations', x)
   tf.scalar_summary(tensor_name + '/sparsity', tf.nn.zero_fraction(x))
+
+def _xavier_variable(name, shape, fan_in=None,fan_out=None, wd=0.0):
+    if not fan_in:
+        fan_in = shape[0]*shape[1]*shape[2]
+    if not fan_out:
+        fan_out = shape[0]*shape[1]*shape[3]
+    low = -4*np.sqrt(6.0/(fan_in + fan_out)) # use 4 for sigmoid, 1 for tanh activation
+    high = 4*np.sqrt(6.0/(fan_in + fan_out))
+    var = tf.get_variable(name, shape, dtype=tf.float32, initializer = tf.random_uniform_initializer(minval=low, maxval=high))
+    if wd:
+        l2_loss = tf.nn.l2_loss(var)
+        weight_decay = tf.mul(l2_loss, wd, name='weight_loss')
+        tf.add_to_collection('losses', weight_decay)
+    return var
 
 @tf.RegisterShape("ExtractGlimpse")
 def _extract_glimpse_shape(op):
@@ -65,47 +81,80 @@ def _extract_glimpse_from_location(full_image, location):
 
 def glimpse_network(full_image, location):
     glimpse = _extract_glimpse_from_location(full_image, location)
+    glimpse_vars = {}
     #glimpse of size (batch_size, glimpse_size, glimpse_size, 3)
     # conv1
-    with tf.variable_scope('glimpse/image/conv1') as scope:
-        kernel = util._variable_with_weight_decay('weights', shape=[3, 3, 3, 64],
-                                             stddev=1e-4, wd=0.0)
-        conv = tf.nn.conv2d(glimpse, kernel, [1, 1, 1, 1], padding='SAME')
-        biases = tf.get_variable('biases', [64], initializer=tf.constant_initializer(0.0))
-        bias = tf.reshape(tf.nn.bias_add(conv, biases), [FLAGS.batch_size, FLAGS.glimpse_size, FLAGS.glimpse_size, 64])
-        conv1 = tf.nn.relu(bias, name=scope.name)
-        #_activation_summary(conv1)
+    with tf.variable_scope('glimpse/image') as outer_scope:
+        with tf.variable_scope('conv1') as scope:
+            kernel1 = _xavier_variable('weights', shape=[5, 5, 3, 64], fan_in=5*5*3, fan_out=5*5*64)
+            conv = tf.nn.conv2d(glimpse, kernel1, [1, 1, 1, 1], padding='SAME')
+            biases1 = _xavier_variable('biases', [64], fan_in=1, fan_out=5*5*64)
+            bias = tf.reshape(tf.nn.bias_add(conv, biases1), [FLAGS.batch_size, FLAGS.glimpse_size, FLAGS.glimpse_size, 64])
+            conv1 = tf.nn.relu(bias, name=scope.name)
+            dropped_conv1 = tf.nn.dropout(conv1, .8)
+            _activation_summary(dropped_conv1)
+            glimpse_vars['conv1/weights:0'] = kernel1
+            glimpse_vars['conv1/biases:0'] = biases1
 
-    # conv2
-    with tf.variable_scope('glimpse/image/conv2') as scope:
-        kernel = util._variable_with_weight_decay('weights', shape=[5, 5, 64, 64],
-                                             stddev=1e-4, wd=0.0)
-        conv = tf.nn.conv2d(conv1, kernel, [1, 1, 1, 1], padding='SAME')
-        biases = tf.get_variable('biases', [64], initializer=tf.constant_initializer(0.1))
-        bias = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape().as_list())
-        conv2 = tf.nn.relu(bias, name=scope.name)
-        #_activation_summary(conv2)
+        # pool1
+        pool1 = tf.nn.max_pool(dropped_conv1, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1],
+                               padding='SAME', name='pool1')
+        # norm1
+        norm1 = tf.nn.lrn(pool1, 4, bias=1.0, alpha=0.001 / 9.0, beta=0.75,
+                            name='norm1')
 
-    # conv3
-    with tf.variable_scope('glimpse/image/conv3') as scope:
-        kernel = util._variable_with_weight_decay('weights', shape=[7, 7, 64, 64],
-                                             stddev=1e-4, wd=0.0)
-        conv = tf.nn.conv2d(conv2, kernel, [1, 1, 1, 1], padding='SAME')
-        biases = tf.get_variable('biases', [64], initializer=tf.constant_initializer(0.1))
-        bias = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape().as_list())
-        conv3 = tf.nn.relu(bias, name=scope.name)
-        #_activation_summary(conv3)
+        # conv2
+        with tf.variable_scope('conv2') as scope:
+            kernel2 = _xavier_variable('weights', shape=[5, 5, 64, 64], fan_in=5*5*64, fan_out=1)
+            conv = tf.nn.conv2d(norm1, kernel2, [1, 1, 1, 1], padding='SAME')
+            biases2 = _xavier_variable('biases', [64], fan_in=1, fan_out=5*5*64)
+            bias = tf.reshape(tf.nn.bias_add(conv, biases2), conv.get_shape().as_list())
+            conv2 = tf.nn.relu(bias, name=scope.name)
+            dropped_conv2 = tf.nn.dropout(conv2, .8)
+            _activation_summary(dropped_conv2)
+            glimpse_vars['conv2/weights:0'] = kernel2
+            glimpse_vars['conv2/biases:0'] = biases2
 
-    # fc4
-    with tf.variable_scope('glimpse/image/fc4') as scope:
-        total_elts = FLAGS.batch_size*FLAGS.glimpse_size*FLAGS.glimpse_size*64
-        W_fc4 = util._variable_with_weight_decay('weights', shape=[total_elts, FLAGS.lstm_size],
-                                           stddev=1e-4, wd=0.0)
-        b_fc4 = tf.get_variable('biases', [FLAGS.lstm_size], initializer=tf.constant_initializer(0.1))
+        # norm2
+        norm2 = tf.nn.lrn(dropped_conv2, 4, bias=1.0, alpha=0.001 / 9.0, beta=0.75,
+                          name='norm2')
+        # pool2
+        pool2 = tf.nn.max_pool(norm2, ksize=[1, 3, 3, 1],
+                               strides=[1, 2, 2, 1], padding='SAME', name='pool2')
 
-        conv3_flat = tf.reshape(conv3, [-1, total_elts])
-        fc4 = tf.nn.relu(tf.matmul(conv3_flat, W_fc4) + b_fc4)
-        #_activation_summary(fc4)
+        # conv3
+        with tf.variable_scope('conv3') as scope:
+            kernel3 = _xavier_variable('weights', shape=[7, 7, 64, 64], fan_in=7*7*64, fan_out=1)
+            conv = tf.nn.conv2d(pool2, kernel3, [1, 1, 1, 1], padding='VALID')
+            biases3 = _xavier_variable('biases', [64], fan_in=1, fan_out=7*7*64)
+            bias = tf.reshape(tf.nn.bias_add(conv, biases3), conv.get_shape().as_list())
+            conv3 = tf.nn.relu(bias, name=scope.name)
+            dropped_conv3 = tf.nn.dropout(conv3, .8)
+            _activation_summary(dropped_conv3)
+            glimpse_vars['conv3/weights:0'] = kernel3
+            glimpse_vars['conv3/biases:0'] = biases3
+
+        # norm3
+        norm3 = tf.nn.lrn(dropped_conv3, 4, bias=1.0, alpha=0.001 / 9.0, beta=0.75,
+                          name='norm3')
+        # pool3
+        pool3 = tf.nn.max_pool(norm3, ksize=[1, 3, 3, 1],
+                               strides=[1, 2, 2, 1], padding='SAME', name='pool3')
+
+        # fc4
+        with tf.variable_scope('fc4') as scope:
+            # Move everything into depth so we can perform a single matrix multiply.
+            dim = 1
+            for d in pool3.get_shape()[1:].as_list():
+              dim *= d
+            reshape = tf.reshape(pool3, [FLAGS.batch_size, dim])
+
+            weights4 = _xavier_variable('weights', shape=[dim,FLAGS.lstm_size], fan_in=dim,fan_out=1, wd=.004)
+            biases4 = _xavier_variable('biases', [FLAGS.lstm_size], fan_in=1, fan_out=FLAGS.lstm_size)
+            fc4 = tf.nn.relu(tf.nn.bias_add(tf.matmul(reshape, weights4), biases4), name=scope.name)
+            dropped_fc4 = tf.nn.dropout(fc4, .8)
+            _activation_summary(dropped_fc4)
+
 
     # fc1
     with tf.variable_scope('glimpse/location/fc1') as scope:
@@ -115,13 +164,14 @@ def glimpse_network(full_image, location):
 
         location_flat = tf.reshape(location, [-1, 2])
         fc1 = tf.nn.relu(tf.matmul(location_flat, W_fc1) + b_fc1)
-        #_activation_summary(fc1)
+        dropped_fc1 = tf.nn.dropout(fc1, .8)
+        _activation_summary(dropped_fc1)
 
     # output feature vector
     with tf.variable_scope('glimpse/output') as scope:
-        output = tf.mul(fc1, fc4)
-        #_activation_summary(output)
-    return output
+        output = tf.mul(dropped_fc1, dropped_fc4)
+        _activation_summary(output)
+    return output, glimpse_vars
 
 def context_network(low_res):
     # conv1
@@ -132,7 +182,7 @@ def context_network(low_res):
         biases = tf.get_variable('biases', [64], initializer=tf.constant_initializer(0.0))
         bias = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape().as_list())
         conv1 = tf.nn.relu(bias, name=scope.name)
-        #_activation_summary(conv1)
+        _activation_summary(conv1)
 
     # conv2
     with tf.variable_scope('context/conv2') as scope:
@@ -142,7 +192,7 @@ def context_network(low_res):
         biases = tf.get_variable('biases', [64], initializer=tf.constant_initializer(0.1))
         bias = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape().as_list())
         conv2 = tf.nn.relu(bias, name=scope.name)
-        #_activation_summary(conv2)
+        _activation_summary(conv2)
 
     # conv3
     with tf.variable_scope('context/conv3') as scope:
@@ -152,7 +202,7 @@ def context_network(low_res):
         biases = tf.get_variable('biases', [2], initializer=tf.constant_initializer(0.1))
         bias = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape().as_list())
         conv3 = tf.nn.relu(bias, name=scope.name)
-        #_activation_summary(conv3)
+        _activation_summary(conv3)
 
     #convert to 1-d for inputting into LSTM
     return tf.reshape(conv3, [FLAGS.batch_size, -1])
@@ -176,7 +226,7 @@ def _parse_emission_output(emission):
         #rescale so fits as a proper location
         max_loc = tf.constant(MAX_LOC, dtype=tf.float32, shape=[FLAGS.batch_size,2])
         loc =  tf.mul(max_loc, tf.nn.tanh(orig_loc))   #0 -> MAX_LOC
-        #_activation_summary(loc)
+        _activation_summary(loc)
     return orig_loc, keep_going
 
 def classification_network(state):
@@ -185,10 +235,10 @@ def classification_network(state):
                                            stddev=1e-4, wd=0.0)
         b_fc1 = tf.get_variable('biases', [FLAGS.num_classes], initializer=tf.constant_initializer(0.1))
         fc1 = tf.nn.relu(tf.matmul(state, W_fc1) + b_fc1)
-        #_activation_summary(fc1)
+        _activation_summary(fc1)
     with tf.variable_scope('classification/fc1') as scope:
         softmax = tf.nn.softmax(fc1)
-        #_activation_summary(softmax)
+        _activation_summary(softmax)
     return softmax
 
 def attention(classifications, valid_classifications):
@@ -225,7 +275,8 @@ def rnn_model(full_image):
                 tf.get_variable_scope().reuse_variables()
             keep_going_threshold = tf.constant(FLAGS.keep_going_threshold, dtype=tf.float32)
 
-            lstm1_output, lstm1_state = lstm1(glimpse_network(full_image, location), lstm1_state)
+            glimpse_out, glimpse_vars = glimpse_network(full_image, location)
+            lstm1_output, lstm1_state = lstm1(glimpse_out, lstm1_state)
 
             classifications_list.append(classification_network(lstm1_state))
 
@@ -246,7 +297,7 @@ def rnn_model(full_image):
     classifications = attention(classifications, valid_classifications)
     classifications.get_shape()
 
-    return tf.squeeze(classifications)
+    return tf.squeeze(classifications), glimpse_vars
 
 def loss(logits, labels):
   """Add L2Loss to all the trainable variables.
@@ -270,8 +321,6 @@ def loss(logits, labels):
                                     1.0, 0.0)
 
   # Calculate the average cross entropy loss across the batch.
-  print dense_labels.get_shape()
-  print logits.get_shape()
   cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
       logits, dense_labels, name='cross_entropy_per_example')
 
@@ -339,7 +388,8 @@ def train(total_loss, global_step):
 
   # Compute gradients.
   with tf.control_dependencies([loss_averages_op]):
-    opt = tf.train.GradientDescentOptimizer(lr)
+    #opt = tf.train.GradientDescentOptimizer(lr)
+    opt = tf.train.RMSPropOptimizer(lr, .9, momentum=0.0, epsilon=1e-6, use_locking=False, name='RMSProp')
     grads = opt.compute_gradients(total_loss)
 
   # Apply gradients.

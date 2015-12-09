@@ -5,7 +5,7 @@ import model
 import time
 import numpy as np
 from datetime import datetime
-import os
+import os,sys
 FLAGS = tf.app.flags.FLAGS
 
 # Basic model parameters.
@@ -17,6 +17,8 @@ tf.app.flags.DEFINE_string('label_dir', '/local/miniplaces/development_kit/data'
                            """Path to the miniplaces label directory.""")
 tf.app.flags.DEFINE_string('train_dir', '/local/miniplaces/train_output',
                            """Path to the miniplaces data directory.""")
+tf.app.flags.DEFINE_string('checkpoint_dir', '/local/miniplaces/train_output',
+                           """Directory where to read model checkpoints.""")
 tf.app.flags.DEFINE_integer('image_size', 100,"""width of image to crop to for training""")
 
 tf.app.flags.DEFINE_integer('num_classes', 100,"""Number of classes""")
@@ -34,7 +36,8 @@ tf.app.flags.DEFINE_string('device', '/gpu:0', """device to use for variables"""
 tf.app.flags.DEFINE_float('moving_average_decay', 0.9999,"""The decay to use for the moving average""")
 tf.app.flags.DEFINE_float('num_epochs_per_decay', 350.0,"""Epochs after which learning rate decays.""")
 tf.app.flags.DEFINE_float('learning_rate_decay_factor', 0.1,"""Learning rate decay factor.""")
-tf.app.flags.DEFINE_float('initial_learning_rate', 0.1,"""Initial learning rate.""")
+tf.app.flags.DEFINE_float('initial_learning_rate', 0.01,"""Initial learning rate.""")
+tf.app.flags.DEFINE_float('rms_decay', 0.9,"""RMS decay factor.""")
 
 def train():
 
@@ -73,6 +76,13 @@ def train():
                     allow_soft_placement=True,
                     log_device_placement=FLAGS.log_device_placement))
         sess.run(init)
+        for x in tf.all_variables():
+            print x.name
+        sys.exit()
+        ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
+        if ckpt and ckpt.model_checkpoint_path:
+            saver.restore(sess, ckpt.model_checkpoint_path)
+            global_step = ckpt.model_checkpoint_path.split('/')[-1].split('-')[-1]
 
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord,sess=sess)
@@ -84,10 +94,10 @@ def train():
 
 
         for step in xrange(FLAGS.max_steps):
-            print 'step:',step
+            #print 'step:',step
             start_time = time.time()
             _, loss_value = sess.run([train_op, loss])
-            print 'ran'
+            #print 'ran'
             duration = time.time() - start_time
 
             assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
@@ -97,16 +107,17 @@ def train():
                 examples_per_sec = num_examples_per_step / float(duration)
                 sec_per_batch = float(duration)
 
+                sys.stdout.flush()
                 format_str = ('%s: step %d, loss = %.2f (%.1f examples/sec; %.3f '
                       'sec/batch)')
                 print format_str % (datetime.now(), step, loss_value,
                              examples_per_sec, sec_per_batch)
-            print 'here'
+            #print 'here'
             if step % 100 == 0:
-                print "entering summary"
+                #print "entering summary"
                 summary_str = sess.run(summary_op)
                 summary_writer.add_summary(summary_str, step)
-                print "exiting summary"
+                #print "exiting summary"
 
             # Save the model checkpoint periodically.
             if step % 1000 == 0 or (step + 1) == FLAGS.max_steps:
@@ -118,7 +129,7 @@ def train():
             #TODO: check to make sure this is right
             if step > 0 and step % (FLAGS.num_examples_per_epoch_for_train -1) == 0:
                 sess.run(label_enqueue)
-            print "about to start second"
+            #print "about to start second"
 
         coord.request_stop()
         coord.join(threads)

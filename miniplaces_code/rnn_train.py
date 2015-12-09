@@ -10,14 +10,14 @@ FLAGS = tf.app.flags.FLAGS
 # Basic model parameters.
 tf.app.flags.DEFINE_integer('batch_size', 16,
                             """Number of images to process in a batch.""")
-tf.app.flags.DEFINE_string('data_dir', '/Users/bschreck/scenic-recursion/images',
+tf.app.flags.DEFINE_string('data_dir', '/local/miniplaces/images',
                            """Path to the miniplaces data directory.""")
-tf.app.flags.DEFINE_string('label_dir', '/Users/bschreck/scenic-recursion/development_kit/data',
+tf.app.flags.DEFINE_string('label_dir', '/local/miniplaces/development_kit/data',
                            """Path to the miniplaces label directory.""")
-tf.app.flags.DEFINE_string('train_dir', '/Users/bschreck/scenic-recursion/rnn_train_output',
+tf.app.flags.DEFINE_string('train_dir', '/local/miniplaces/rnn_train_output',
                            """Path to the miniplaces data directory.""")
 tf.app.flags.DEFINE_integer('image_size', 100,"""width of image to crop to for training""")
-tf.app.flags.DEFINE_integer('glimpse_size', 32,"""width of image to extract glimpse for rnn step""")
+tf.app.flags.DEFINE_integer('glimpse_size', 64,"""width of image to extract glimpse for rnn step""")
 tf.app.flags.DEFINE_integer('context_image_size', 32,"""width of downsampled image to feed into context layer""")
 
 tf.app.flags.DEFINE_integer('lstm_size', 256,"""size of lstm state""")
@@ -43,13 +43,18 @@ tf.app.flags.DEFINE_float('initial_learning_rate', 0.1,"""Initial learning rate.
 tf.app.flags.DEFINE_float('float_to_pixel', .15, """Ratio of location unit width to number of pixels""")
 tf.app.flags.DEFINE_float('keep_going_threshold', .1, """Ratio of location unit width to number of pixels""")
 
-tf.app.flags.DEFINE_string('eval_dir', '/Users/bschreck/scenic-recursion/rnn_train_output',
+tf.app.flags.DEFINE_string('eval_dir', '/local/miniplaces/rnn_train_output',
                            """Directory where to write event logs.""")
 tf.app.flags.DEFINE_string('eval_data', 'test',
                            """Either 'test' or 'train_eval'.""")
-tf.app.flags.DEFINE_string('checkpoint_dir', '/Users/bschreck/scenic-recursion/rnn_train_output',
+tf.app.flags.DEFINE_string('checkpoint_dir', '/local/miniplaces/rnn_train_output',
                            """Directory where to read model checkpoints.""")
-tf.app.flags.DEFINE_integer('eval_interval_secs', 60 * 5,
+tf.app.flags.DEFINE_string('pretrained_checkpoint_path', '/local/miniplaces/train_output/model.ckpt-3000',
+                           """Directory where to read checkpoint for pretrained cnn network.""")
+#tf.app.flags.DEFINE_integer('eval_interval_secs', 60 * 5,
+#                            """How often to run the eval.""")
+
+tf.app.flags.DEFINE_integer('eval_interval_secs', 1,
                             """How often to run the eval.""")
 tf.app.flags.DEFINE_integer('num_examples', 10000,
                             """Number of examples to run.""")
@@ -62,7 +67,7 @@ import recurrent_model as model
 import rnn_eval as eval_func
 
 def train():
-    with tf.Graph().as_default(), tf.device('/cpu:0'):
+    with tf.Graph().as_default(), tf.device('/gpu:0'):
         global_step = tf.get_variable(
             'global_step',[],
             initializer=tf.constant_initializer(0), trainable=False)
@@ -72,7 +77,7 @@ def train():
 
         # Build a Graph that computes the logits predictions from the
         # inference model.
-        logits = model.rnn_model(images)
+        logits,glimpse_vars= model.rnn_model(images)
         # Calculate loss.
         loss = model.loss(logits, labels)
 
@@ -84,6 +89,27 @@ def train():
 
         # Create a saver.
         saver = tf.train.Saver(tf.all_variables())
+        pretrained_glimpse_vars = {
+            u'conv1/weights': glimpse_vars['conv1/weights:0'],
+            u'conv1/biases': glimpse_vars['conv1/biases:0'],
+            u'conv2/weights': glimpse_vars['conv2/weights:0'],
+            u'conv2/biases': glimpse_vars['conv2/biases:0'],
+            u'conv3/weights': glimpse_vars['conv3/weights:0'],
+            u'conv3/biases': glimpse_vars['conv3/biases:0'],
+            }
+        # pretrained_context_vars = {
+            # u'conv1/weights:': context_vars['conv1/weights:0'],
+            # u'conv1/biases:':  context_vars['conv1/biases:0'],
+            # u'conv2/weights:': context_vars['conv2/weights:0'],
+            # u'conv2/biases:':  context_vars['conv2/biases:0'],
+            # u'conv3/weights:': context_vars['conv3/weights:0'],
+            # u'conv3/biases:':  context_vars['conv3/biases:0'],
+        # }
+        # print "="*50
+        # for var in tf.all_variables():
+            # print var.name, ":", var
+        pretrained_glimpse_saver = tf.train.Saver(pretrained_glimpse_vars)
+        #pretrained_context_saver = tf.train.Saver(pretrained_context_vars)
 
         # Build the summary operation based on the TF collection of Summaries.
         summary_op = tf.merge_all_summaries()
@@ -93,9 +119,13 @@ def train():
 
             # Start running operations on the Graph.
         sess = tf.Session(config=tf.ConfigProto(
-                    allow_soft_placement=False,
+                    allow_soft_placement=True,
                     log_device_placement=FLAGS.log_device_placement))
         sess.run(init)
+
+        pretrained_ckpt = FLAGS.pretrained_checkpoint_path
+        pretrained_glimpse_saver.restore(sess, pretrained_ckpt)
+        #pretrained_context_saver.restore(sess, pretrained_ckpt)
 
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord,sess=sess)

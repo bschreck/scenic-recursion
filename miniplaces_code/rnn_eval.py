@@ -52,9 +52,9 @@ def eval_once(saver, summary_writer, top_k_op, summary_op, label_enqueue):
                 size = qr._queue.size().eval()
                 if size - FLAGS.batch_size < FLAGS.min_queue_size:
                     end_epoch = True
+                print 'end epoch:', end_epoch
         if end_epoch:
             sess.run(label_enqueue)
-        print "STEP:",step
         predictions = sess.run([top_k_op])
         true_count += np.sum(predictions)
         step += 1
