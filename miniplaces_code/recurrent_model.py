@@ -77,12 +77,28 @@ def _extract_glimpse_from_location(full_image, location):
     return tf.stop_gradient(glimpse)
 
 
+def _variable_on_cpu(name, shape, initializer):
+  """Helper to create a Variable stored on CPU memory.
 
+  Args:
+    name: name of the variable
+    shape: list of ints
+    initializer: initializer for Variable
+
+  Returns:
+    Variable Tensor
+  """
+  with tf.device('/cpu:0'):
+    var = tf.get_variable(name, shape, initializer=initializer)
+  return var
 
 def glimpse_network(full_image, location):
     glimpse = _extract_glimpse_from_location(full_image, location)
     glimpse_vars = {}
     #glimpse of size (batch_size, glimpse_size, glimpse_size, 3)
+
+    epsilon = 0.001
+
     # conv1
     with tf.variable_scope('glimpse/image') as outer_scope:
         with tf.variable_scope('conv1') as scope:
@@ -92,7 +108,15 @@ def glimpse_network(full_image, location):
             bias = tf.reshape(tf.nn.bias_add(conv, biases1), [FLAGS.batch_size, FLAGS.glimpse_size, FLAGS.glimpse_size, 64])
             conv1 = tf.nn.relu(bias, name=scope.name)
             dropped_conv1 = tf.nn.dropout(conv1, .8)
-            _activation_summary(dropped_conv1)
+
+            mean1, variance1 = tf.nn.moments(conv1, [0])
+            beta1 = tf.Variable(tf.constant(0.0, shape=[64]))
+            gamma1 = tf.Variable(tf.constant(1.0, shape=[64]))
+            bn1 = tf.mul((conv1 - mean1), tf.sqrt(variance1 + epsilon))
+            bn1 = tf.add(tf.mul(bn1, gamma1), beta1)
+
+            # _activation_summary(dropped_conv1)
+            _activation_summary(bn1)
             glimpse_vars['conv1/weights:0'] = kernel1
             glimpse_vars['conv1/biases:0'] = biases1
 

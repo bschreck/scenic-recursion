@@ -1,0 +1,5 @@
+Batch Normalization
+
+When training deep neural networks, inputs and parameters of previous layers change as well. This means that training a network requires careful initialization and is generally slow in learning. By using batch normalization, we normalize layer inputs, which allows a significantly faster learning rate. In addition, batch normalization acts as a regularizer similar to Dropout, preventing overfitting.
+
+For a specific subset of activations, we insert the batch normalization tranform BN--that is-- a layer that previously had x as an input now uses BN(x). According to Ioffe et al., we use the normalization (x - E[x]) / sqrt(Var[x] + epsilon), where we use epsilon = 0.001 as suggested.
