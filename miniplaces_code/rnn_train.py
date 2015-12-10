@@ -118,61 +118,60 @@ def train():
         init = tf.initialize_all_variables()
 
             # Start running operations on the Graph.
-        sess = tf.Session(config=tf.ConfigProto(
-                    allow_soft_placement=True,
-                    log_device_placement=FLAGS.log_device_placement))
-        sess.run(init)
+        with tf.Session(config=tf.ConfigProto(allow_soft_placement=True,
+                            log_device_placement=FLAGS.log_device_placement)) as sess:
+            sess.run(init)
 
-        pretrained_ckpt = FLAGS.pretrained_checkpoint_path
-        pretrained_glimpse_saver.restore(sess, pretrained_ckpt)
-        #pretrained_context_saver.restore(sess, pretrained_ckpt)
+            pretrained_ckpt = FLAGS.pretrained_checkpoint_path
+            pretrained_glimpse_saver.restore(sess, pretrained_ckpt)
+            #pretrained_context_saver.restore(sess, pretrained_ckpt)
 
-        coord = tf.train.Coordinator()
-        threads = tf.train.start_queue_runners(coord=coord,sess=sess)
-        sess.run(label_enqueue)
+            coord = tf.train.Coordinator()
+            threads = []
+            for qr in tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS):
+                threads.extend(qr.create_threads(sess, coord=coord, daemon=True,
+                                             start=True))
+            sess.run(label_enqueue)
 
-        summary_writer = tf.train.SummaryWriter(FLAGS.train_dir,
-                                                graph_def=sess.graph_def)
+            summary_writer = tf.train.SummaryWriter(FLAGS.train_dir,
+                                                    graph_def=sess.graph_def)
 
 
-        for step in xrange(FLAGS.max_steps):
-            print 'step:',step
-            start_time = time.time()
-            _, loss_value = sess.run([train_op, loss])
-            print 'ran'
-            duration = time.time() - start_time
+            for step in xrange(FLAGS.max_steps):
+                start_time = time.time()
+                _, loss_value = sess.run([train_op, loss])
+                duration = time.time() - start_time
 
-            assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
+                assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
 
-            if step % 10 == 0:
-                num_examples_per_step = FLAGS.batch_size
-                examples_per_sec = num_examples_per_step / float(duration)
-                sec_per_batch = float(duration)
+                if step % 10 == 0:
+                    num_examples_per_step = FLAGS.batch_size
+                    examples_per_sec = num_examples_per_step / float(duration)
+                    sec_per_batch = float(duration)
 
-                format_str = ('%s: step %d, loss = %.2f (%.1f examples/sec; %.3f '
-                      'sec/batch)')
-                print format_str % (datetime.now(), step, loss_value,
-                             examples_per_sec, sec_per_batch)
-            print 'here'
-            if step % 100 == 0:
-                print "entering summary"
-                summary_str = sess.run(summary_op)
-                summary_writer.add_summary(summary_str, step)
-                print "exiting summary"
+                    format_str = ('%s: step %d, loss = %.2f (%.1f examples/sec; %.3f '
+                          'sec/batch)')
+                    print format_str % (datetime.now(), step, loss_value,
+                                 examples_per_sec, sec_per_batch)
+                if step % 100 == 0:
+                    summary_str = sess.run(summary_op)
+                    summary_writer.add_summary(summary_str, step)
 
-            # Save the model checkpoint periodically.
-            if step % 1000 == 0 or (step + 1) == FLAGS.max_steps:
-                print "ckpt"
-                checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
-                saver.save(sess, checkpoint_path, global_step=step)
-                print "leaving ckpt"
+                # Save the model checkpoint periodically.
+                if step % 1000 == 0 or (step + 1) == FLAGS.max_steps:
+                    checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
+                    saver.save(sess, checkpoint_path, global_step=step)
 
-            #TODO: check to make sure this is right
-            if step > 0 and step % (FLAGS.num_examples_per_epoch_for_train -1) == 0:
-                sess.run(label_enqueue)
-            print "about to start second"
-        coord.request_stop()
-        coord.join(threads)
+                end_epoch = False
+                if step > 0:
+                    for qr in tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS):
+                        size = qr._queue.size().eval()
+                        if size - FLAGS.batch_size < FLAGS.min_queue_size:
+                            end_epoch = True
+                if end_epoch:
+                    sess.run(label_enqueue)
+            coord.request_stop()
+            coord.join(threads)
 
 def main(_):
     if FLAGS.evaluate:

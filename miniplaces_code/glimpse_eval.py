@@ -5,7 +5,7 @@ import time
 import numpy as np
 import tensorflow as tf
 import load_input
-import model
+import glimpse_pretrain_model as model
 import os
 FLAGS = tf.app.flags.FLAGS
 
